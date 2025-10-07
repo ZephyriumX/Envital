@@ -20,20 +20,12 @@ Built for real-time health monitoring and hackathon demo purposes.
 ## 📂 Repository Structure
 
 ```
-Envital/
-├── backend/                 # FastAPI app, SQLAlchemy models, routes
-├── data/
-│   ├── simulator.py          # Wearable data simulator
-│   └── samples/              # Generated sample JSONL events
-├── dashboards/              # Streamlit dashboards (geo heatmap, recovery)
-├── scripts/
-│   └── validate_events.py    # Validate JSONL event schema
-├── docs/                     # Diagrams, design notes
-├── requirements.txt          # Python dependencies
-├── docker-compose.yml        # Postgres/Timescale setup
-├── .env.sample               # Example env vars
-├── .gitignore
-└── README.md
+ingest-simulator/
+└── data/
+├── simulator.py # Wearable data simulator
+└── samples/ # Generated sample JSONL events
+└── scripts/
+└── validate_events.py # Validate JSONL event schema
 ```
 
 ---
