@@ -1,0 +1,43 @@
+# render.yaml - Render infra as code
+services:
+  - type: web
+    name: envital-backend
+    env: docker
+    branch: main
+    repo: <YOUR GITHUB USER>/<YOUR REPO>
+    plan: free
+    region: oregon
+    dockerfilePath: ./Dockerfile
+    envVars:
+      - key: DATABASE_URL
+        scope: PRIVATE
+      - key: SECRET_KEY
+        scope: PRIVATE
+      - key: MAPBOX_TOKEN
+        scope: PRIVATE
+    healthCheckPath: /health
+    autoDeploy: true
+
+  - type: worker
+    name: envital-aggregator
+    env: docker
+    branch: main
+    repo: <YOUR GITHUB USER>/<YOUR REPO>
+    plan: free
+    region: oregon
+    dockerfilePath: ./Dockerfile
+    startCommand: "python -m backend.aggregator"
+    cpu: 1
+    memory: 512
+    envVars:
+      - key: DATABASE_URL
+        scope: PRIVATE
+      - key: SECRET_KEY
+        scope: PRIVATE
+    autoDeploy: true
+
+databases:
+  - name: envital-db
+    engine: postgres
+    plan: starter
+    # Render will create DB and provide a connection string in the dashboard. Link to env var manually.

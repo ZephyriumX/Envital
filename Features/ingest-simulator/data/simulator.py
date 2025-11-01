@@ -5,8 +5,8 @@ import uuid
 import json
 import argparse
 from dataclasses import dataclass
-from typing import Dict, Optional, List, Tuple
-from datetime import datetime, timedelta
+from typing import Dict, Optional, List
+from datetime import datetime, timedelta, timezone
 from urllib import request, error
 import math
 
@@ -42,21 +42,20 @@ def _gps_drift(lat: float, lon: float, meters: float = 10.0) -> tuple[float, flo
     return lat + dlat, lon + dlon
 
 
-def generate_event(ts: datetime, profile: UserProfile, prev_hr: Optional[float]) -> Dict:
-    # Random walk around baseline for more realistic continuity
+def generate_event(ts: datetime, profile: UserProfile, prev_hr: Optional[float], inject_env: bool) -> Dict:
+    # Random walk around baseline for continuity
     if prev_hr is None:
         hr_val = _bounded_int(_jitter(profile.hr_base, profile.hr_sigma), 50, 140)
     else:
         hr_val = _bounded_int(_rand_walk(prev_hr, step_sigma=1.5, min_v=48, max_v=150), 48, 150)
 
     spo2_val = _bounded_int(_jitter(profile.spo2_base, profile.spo2_sigma), 90, 99)
-    # steps for this interval: mostly low, sometimes little bursts
     steps = max(0, int(random.gauss(profile.step_rate_per_interval, 8)))
     lat, lon = _gps_drift(profile.lat0, profile.lon0, meters=random.uniform(2, 25))
 
-    return {
+    event = {
         "id": str(uuid.uuid4()),
-        "timestamp": ts.replace(microsecond=0).isoformat() + "Z",  # UTC ISO8601
+        "timestamp": ts.replace(tzinfo=timezone.utc, microsecond=0).isoformat(),
         "user_id": profile.user_id,
         "hr": hr_val,
         "spo2": spo2_val,
@@ -65,9 +64,20 @@ def generate_event(ts: datetime, profile: UserProfile, prev_hr: Optional[float])
         "lon": round(lon, 6),
     }
 
+    # optionally attach environmental sensor values
+    if inject_env:
+        event.update({
+            "ambient_temp": round(random.uniform(20, 38), 1),
+            "humidity": round(random.uniform(30, 80), 1),
+            "noise_db": round(random.uniform(40, 90), 1),
+            "aqi": round(random.uniform(50, 180), 0),
+            "heat_index": round(random.uniform(20, 45), 1),
+        })
+
+    return event
+
 
 def inject_anomaly(evt: Dict, kind: str) -> Dict:
-    """Mutate the event to simulate an anomaly."""
     e = dict(evt)
     if kind == "hr_spike":
         e["hr"] = min(170, evt["hr"] + random.randint(25, 55))
@@ -98,8 +108,8 @@ def stream(
     anomaly_every: Optional[int],
     anomaly_kind: str,
     quiet: bool,
+    inject_env: bool,
 ):
-    # Create user profiles with subtle baseline diversity
     profiles: List[UserProfile] = []
     for i in range(num_users):
         profiles.append(
@@ -118,7 +128,7 @@ def stream(
     start = datetime.utcnow()
     end = start + timedelta(minutes=duration_min)
 
-    f = open(outfile, "w") if outfile else None
+    f = open(outfile, "w", buffering=1) if outfile else None
     prev_hr_map: Dict[str, Optional[float]] = {p.user_id: None for p in profiles}
     count = 0
 
@@ -126,30 +136,25 @@ def stream(
         now = start
         while now < end:
             for p in profiles:
-                evt = generate_event(now, p, prev_hr_map[p.user_id])
+                evt = generate_event(now, p, prev_hr_map[p.user_id], inject_env=inject_env)
 
-                # anomaly injection cadence
                 count += 1
                 to_send = evt
-                injected = False
                 if anomaly_every and count % anomaly_every == 0:
                     to_send = inject_anomaly(evt, anomaly_kind)
-                    injected = True
 
                 line = json.dumps(to_send)
-                # write to file or stdout
                 if f:
                     f.write(line + "\n")
+                    f.flush()
                 elif not quiet:
                     print(line, flush=True)
 
-                # optional POST to API
                 if post_url:
                     ok = post_event(post_url, to_send)
                     if not ok and not quiet:
                         print(f"[warn] POST failed for event {to_send.get('id')}", flush=True)
 
-                # update prev HR using the actual (possibly anomalous) value
                 prev_hr_map[p.user_id] = to_send["hr"]
 
             now += timedelta(seconds=interval_sec)
@@ -162,14 +167,17 @@ def stream(
 
 def parse_args() -> argparse.Namespace:
     ap = argparse.ArgumentParser(description="Envital Wearable Data Simulator")
-    ap.add_argument("--users", type=int, default=5, help="number of simulated users")
-    ap.add_argument("--interval", type=int, default=5, help="seconds between ticks")
-    ap.add_argument("--minutes", type=float, default=1, help="duration to run (minutes, can be float)")
-    ap.add_argument("--out", type=str, default=None, help="write JSONL to file (else stdout)")
-    ap.add_argument("--post-url", type=str, default=None, help="POST each event to an API URL, e.g., http://localhost:8000/api/ingest_event")
-    ap.add_argument("--anomaly-every", type=int, default=0, help="inject an anomaly every N events (0 disables)")
-    ap.add_argument("--anomaly-kind", type=str, default="hr_spike", choices=["hr_spike", "spo2_drop", "tachy_low_spo2"], help="type of anomaly to inject")
-    ap.add_argument("--quiet", action="store_true", help="suppress stdout printing")
+    ap.add_argument("--users", type=int, default=5)
+    ap.add_argument("--interval", type=int, default=5)
+    ap.add_argument("--minutes", type=float, default=1)
+    ap.add_argument("--out", type=str, default=None)
+    ap.add_argument("--post-url", type=str, default=None)
+    ap.add_argument("--anomaly-every", type=int, default=0)
+    ap.add_argument("--anomaly-kind", type=str, default="hr_spike",
+                    choices=["hr_spike", "spo2_drop", "tachy_low_spo2"])
+    ap.add_argument("--quiet", action="store_true")
+    ap.add_argument("--inject-env", action="store_true",
+                    help="also emit environmental readings per event")
     return ap.parse_args()
 
 
@@ -181,7 +189,9 @@ if __name__ == "__main__":
         duration_min=args.minutes,
         outfile=args.out,
         post_url=args.post_url,
-        anomaly_every=(args.anomaly_every if args.anomaly_every and args.anomaly_every > 0 else None),
+        anomaly_every=(args.anomaly_every if args.anomaly_every > 0 else None),
         anomaly_kind=args.anomaly_kind,
         quiet=args.quiet,
+        inject_env=args.inject_env,
     )
+    
